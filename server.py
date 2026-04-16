@@ -1623,7 +1623,14 @@ async def handle_show_recent() -> str:
 _active_lookups: dict[str, dict] = {}  # id -> {"type": str, "status": str, "started": float}
 
 
-async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict] = None, voice_state: dict = None):
+async def _lookup_and_report(
+    lookup_type: str,
+    lookup_fn,
+    ws,
+    history: list[dict] = None,
+    voice_state: dict = None,
+    force_audio: bool = False,
+):
     """Run a slow lookup, then speak the result back.
 
     JARVIS stays conversational — this runs completely off the main path.
@@ -1646,7 +1653,7 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
         _active_lookups[lookup_id]["status"] = "done"
 
         # Speak the result — skip audio if user spoke recently to avoid collision
-        if voice_state and time.time() - voice_state["last_user_time"] < 3:
+        if not force_audio and voice_state and time.time() - voice_state["last_user_time"] < 3:
             log.info(f"Skipping lookup audio for {lookup_type} — user spoke recently")
             # Result is still stored in history below
         else:
@@ -2179,7 +2186,7 @@ async def voice_handler(ws: WebSocket):
                             asyncio.create_task(_lookup_and_report("mail", _do_mail_lookup, ws, history=history, voice_state=voice_state))
                         elif action["action"] == "read_last_mail":
                             response_text = "Opening your latest email now, sir."
-                            asyncio.create_task(_lookup_and_report("mail", _do_last_mail_lookup, ws, history=history, voice_state=voice_state))
+                            asyncio.create_task(_lookup_and_report("mail", _do_last_mail_lookup, ws, history=history, voice_state=voice_state, force_audio=True))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
