@@ -1,5 +1,8 @@
 """
-JARVIS Calendar Access — read Apple Calendar via AppleScript.
+JARVIS Calendar Access — read Apple Calendar via AppleScript or Google Calendar.
+
+If Google OAuth credentials are configured, Google Calendar is used directly.
+Otherwise, Apple Calendar is queried via AppleScript.
 
 Strategy: fetch all events per-calendar in parallel (bulk property access),
 filter dates in Python. Results cached and refreshed in background.
@@ -11,6 +14,8 @@ import os
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from google_access import google_todays_events, is_google_configured
 
 log = logging.getLogger("jarvis.calendar")
 
@@ -142,6 +147,15 @@ def _parse_applescript_date(s: str) -> datetime | None:
 async def refresh_cache():
     """Refresh the event cache. Called from background loop."""
     global _event_cache, _cache_time, USER_CALENDARS, _auto_discovered
+    if is_google_configured():
+        try:
+            _event_cache = await google_todays_events()
+            _cache_time = _time.time()
+            log.info(f"Google Calendar cache refreshed: {len(_event_cache)} events today")
+            return
+        except Exception as e:
+            log.warning(f"Google Calendar refresh failed: {e}")
+
     await _ensure_calendar_running()
 
     # Auto-discover calendars if none configured
@@ -208,6 +222,12 @@ async def get_next_event() -> dict | None:
 
 async def get_calendar_names() -> list[str]:
     """Get list of all calendar names."""
+    if is_google_configured():
+        raw = os.getenv("GOOGLE_CALENDAR_IDS", "").strip()
+        if raw:
+            return [c.strip() for c in raw.split(",") if c.strip()]
+        return [os.getenv("GOOGLE_USER_EMAIL", "").strip() or "primary"]
+
     await _ensure_calendar_running()
     try:
         proc = await asyncio.create_subprocess_exec(

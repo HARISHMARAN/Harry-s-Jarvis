@@ -43,7 +43,7 @@ from actions import execute_action, monitor_build, open_terminal, open_browser, 
 from work_mode import WorkSession, is_casual_question
 from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context
 from calendar_access import get_todays_events, get_upcoming_events, get_next_event, format_events_for_context, format_schedule_summary, refresh_cache as refresh_calendar_cache
-from mail_access import get_unread_count, get_unread_messages, get_recent_messages, search_mail, read_message, format_unread_summary, format_messages_for_context, format_messages_for_voice
+from mail_access import get_latest_message, get_unread_count, get_unread_messages, get_recent_messages, search_mail, read_message, send_mail, mark_message_read, mark_message_unread, archive_message, trash_message, format_unread_summary, format_messages_for_context, format_messages_for_voice
 from memory import (
     remember, recall, get_open_tasks, create_task, complete_task, search_tasks,
     create_note, search_notes, get_tasks_for_date, build_memory_context,
@@ -63,6 +63,7 @@ log = logging.getLogger("jarvis")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")
 FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
+FISH_SPEECH_SPEED = float(os.getenv("FISH_SPEECH_SPEED", "1.25"))
 FISH_API_URL = "https://api.fish.audio/v1/tts"
 USER_NAME = os.getenv("USER_NAME", "sir")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -106,7 +107,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN plan complex tasks by asking smart questions before executing
 - You CAN see what's on {user_name}'s screen — open windows, active apps, and screenshot vision
 - You CAN read {user_name}'s calendar — today's events, upcoming meetings, schedule overview
-- You CAN read {user_name}'s email (READ-ONLY) — unread count, recent messages, search by sender/subject. You CANNOT send, delete, or modify emails.
+- You CAN read, send, and manage {user_name}'s email when Google Gmail is configured — unread count, recent messages, newest email, search by sender/subject, and basic message actions. If Google is not configured, fall back to Apple Mail reading only.
 - You CAN read Apple Notes and create NEW notes — but you CANNOT edit or delete existing notes
 - You CAN manage tasks — create, complete, and list to-do items with priorities and due dates
 - You CAN help plan {user_name}'s day — combine calendar events, tasks, and priorities into an organized plan
@@ -137,14 +138,13 @@ If the user asks you to do something you genuinely can't do, say "I'm afraid tha
 
 YOUR INTERFACE:
 The user interacts with you through a web browser showing a particle orb visualization that reacts to your voice. The interface has these controls:
-- **Three-dot menu** (top right): contains Settings, Restart Server, and Fix Yourself options
-- **Settings panel**: Opens from the menu. Users can enter API keys (Anthropic, Fish Audio), test connections, set their name and preferences, and see system status (calendar, mail, notes connectivity). Keys are saved to the .env file.
+- **Three-dot menu** (top right): contains Restart Server and Fix Yourself options
 - **Mute button**: Toggles your listening on/off. When muted, you can't hear the user. They click it again to unmute.
 - **Restart Server**: Restarts your backend process. Useful if something seems stuck.
 - **Fix Yourself**: Opens Claude Code in your own project directory so you can debug and fix issues in your own code.
 - **The orb**: The glowing particle visualization in the center. It reacts to your voice when speaking, pulses when listening, and swirls when thinking.
 
-If asked about any of these, explain them briefly and naturally. If the user is having trouble, suggest the relevant control: "Try the settings panel — the gear icon in the top right." or "The mute button may be active, sir."
+If asked about any of these, explain them briefly and naturally. If the user is having trouble, suggest the relevant control: "The mute button may be active, sir." or explain that configuration is managed automatically from the backend and .env file. Never mention a settings panel.
 
 SPEECH-TO-TEXT CORRECTIONS (the user speaks, speech recognition may mishear):
 - "Cloud code" or "cloud" = "Claude Code" or "Claude"
@@ -769,6 +769,24 @@ async def _execute_browse(target: str):
         log.error(f"Browse execution failed: {e}")
 
 
+async def _announce_opus_switch(ws=None):
+    """Tell the user we are switching to Opus before the call starts."""
+    msg = "Switching to Opus now, sir."
+    log.info(msg)
+    if not ws:
+        return
+
+    try:
+        audio = await synthesize_speech(msg)
+        if audio:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        else:
+            await ws.send_json({"type": "text", "text": msg})
+    except Exception as e:
+        log.warning(f"Opus switch announcement failed: {e}")
+
+
 async def _execute_research(target: str, ws=None):
     """Execute research via claude -p in background. Opens report and speaks when done."""
     try:
@@ -1032,6 +1050,9 @@ async def self_work_and_notify(session: WorkSession, prompt: str, ws):
                     await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
                     await ws.send_json({"type": "status", "state": "idle"})
                     log.info(f"JARVIS: {msg}")
+                else:
+                    await ws.send_json({"type": "text", "text": msg})
+                    log.info(f"JARVIS: {msg}")
             except Exception:
                 pass
     except Exception as e:
@@ -1063,6 +1084,7 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
                 json={
                     "text": text,
                     "reference_id": FISH_VOICE_ID,
+                    "prosody": {"speed": FISH_SPEECH_SPEED},
                     "format": "mp3",
                 },
             )
@@ -1149,7 +1171,14 @@ async def generate_response(
             messages=messages,
         )
         track_usage(response)
-        return response.content[0].text
+        raw = ""
+        if getattr(response, "content", None):
+            first = response.content[0]
+            raw = getattr(first, "text", "") if first is not None else ""
+        raw = (raw or "").strip()
+        if raw:
+            return raw
+        return "I'm afraid I didn't catch that, sir."
     except Exception as e:
         log.error(f"LLM error: {e}")
         return "Apologies, sir. I'm having trouble connecting to my language systems."
@@ -1491,6 +1520,12 @@ def detect_action_fast(text: str) -> dict | None:
         return {"action": "check_calendar"}
 
     # Mail — explicit email requests
+    if any(p in t for p in ["read my last email", "open my last email", "read the last email",
+                             "open the last email", "read my latest email", "open my latest email",
+                             "read my most recent email", "open my most recent email",
+                             "read my newest email", "open my newest email"]):
+        return {"action": "read_last_mail"}
+
     if any(p in t for p in ["check my email", "check my mail", "any new emails", "any new mail",
                              "unread emails", "unread mail", "what's in my inbox",
                              "whats in my inbox", "read my email", "read my mail",
@@ -1682,6 +1717,21 @@ async def _do_mail_lookup() -> str:
     return "Couldn't reach Mail at the moment, sir."
 
 
+async def _do_last_mail_lookup() -> str:
+    """Read the newest email and return a spoken summary."""
+    latest = await get_latest_message()
+    if not latest:
+        return "I couldn't find your latest email, sir."
+
+    sender = _short_sender(latest.get("sender", "Unknown sender"))
+    subject = latest.get("subject", "(no subject)")
+    content = (latest.get("content") or latest.get("snippet") or "").strip()
+    if not content:
+        content = "The message body appears to be empty."
+    _ctx_cache["mail"] = f"Latest email from {sender}: {subject}"
+    return f"Your latest email is from {sender}, subject {subject}. {content[:800]}"
+
+
 async def _do_screen_lookup() -> str:
     """Screen describe — runs in thread."""
     if anthropic_client:
@@ -1773,9 +1823,10 @@ async def handle_browse(text: str, target: str) -> str:
     return "Searching for that, sir."
 
 
-async def handle_research(text: str, target: str, client: anthropic.AsyncAnthropic) -> str:
+async def handle_research(text: str, target: str, client: anthropic.AsyncAnthropic, ws=None) -> str:
     """Deep research with Opus — write results to HTML, open in browser."""
     try:
+        await _announce_opus_switch(ws)
         research_response = await client.messages.create(
             model="claude-opus-4-6",
             max_tokens=2000,
@@ -1923,6 +1974,10 @@ async def voice_handler(ws: WebSocket):
                         history.append({"role": "assistant", "content": greeting})
                         log.info(f"JARVIS: {greeting}")
                         await ws.send_json({"type": "status", "state": "idle"})
+                    else:
+                        await ws.send_json({"type": "text", "text": greeting})
+                        history.append({"role": "assistant", "content": greeting})
+                        log.info(f"JARVIS: {greeting}")
                 except Exception as e:
                     log.warning(f"Greeting failed: {e}")
 
@@ -2122,6 +2177,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "check_mail":
                             response_text = "Checking your inbox now, sir."
                             asyncio.create_task(_lookup_and_report("mail", _do_mail_lookup, ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "read_last_mail":
+                            response_text = "Opening your latest email now, sir."
+                            asyncio.create_task(_lookup_and_report("mail", _do_last_mail_lookup, ws, history=history, voice_state=voice_state))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -2288,6 +2346,10 @@ async def voice_handler(ws: WebSocket):
                                                 pass
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
 
+                response_text = (response_text or "").strip()
+                if not response_text:
+                    response_text = "I'm afraid I lost that one, sir."
+
                 # Update history
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": response_text})
@@ -2413,7 +2475,21 @@ class PreferencesUpdate(BaseModel):
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
+    allowed = {
+        "ANTHROPIC_API_KEY",
+        "FISH_API_KEY",
+        "FISH_VOICE_ID",
+        "USER_NAME",
+        "HONORIFIC",
+        "CALENDAR_ACCOUNTS",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+        "GOOGLE_CALENDAR_IDS",
+        "GOOGLE_USER_EMAIL",
+        "GOOGLE_TIMEZONE",
+        "FISH_SPEECH_SPEED",
+    }
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -2482,6 +2558,12 @@ async def api_settings_status():
             "anthropic": bool(env_dict.get("ANTHROPIC_API_KEY", "").strip() and env_dict.get("ANTHROPIC_API_KEY", "") != "your-anthropic-api-key-here"),
             "fish_audio": bool(env_dict.get("FISH_API_KEY", "").strip() and env_dict.get("FISH_API_KEY", "") != "your-fish-audio-api-key-here"),
             "fish_voice_id": bool(env_dict.get("FISH_VOICE_ID", "").strip()),
+            "google_client_id": bool(env_dict.get("GOOGLE_CLIENT_ID", "").strip()),
+            "google_client_secret": bool(env_dict.get("GOOGLE_CLIENT_SECRET", "").strip()),
+            "google_refresh_token": bool(env_dict.get("GOOGLE_REFRESH_TOKEN", "").strip()),
+            "google_calendar_ids": bool(env_dict.get("GOOGLE_CALENDAR_IDS", "").strip()),
+            "google_user_email": bool(env_dict.get("GOOGLE_USER_EMAIL", "").strip()),
+            "fish_speech_speed": bool(env_dict.get("FISH_SPEECH_SPEED", "").strip()),
             "user_name": env_dict.get("USER_NAME", ""),
         },
     }

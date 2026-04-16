@@ -6,9 +6,8 @@
  */
 
 import { createOrb, type OrbState } from "./orb";
-import { createVoiceInput, createAudioPlayer } from "./voice";
+import { createVoiceInput, createAudioPlayer, diagnoseVoiceInput } from "./voice";
 import { createSocket } from "./ws";
-import { openSettings, checkFirstTimeSetup } from "./settings";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +17,7 @@ import "./style.css";
 type State = "idle" | "listening" | "thinking" | "speaking";
 let currentState: State = "idle";
 let isMuted = false;
+let browserTtsPromise: Promise<void> | null = null;
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
@@ -40,6 +40,37 @@ function updateStatus(state: State) {
   statusEl.textContent = labels[state];
 }
 
+function speakFallback(text: string) {
+  if (!("speechSynthesis" in window)) return;
+  const clean = text.trim();
+  if (!clean) return;
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(clean);
+  utterance.rate = 1.25;
+  utterance.pitch = 0.95;
+  utterance.lang = "en-GB";
+
+  const pickVoice = () => {
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find((v) => /en-GB/i.test(v.lang) || /english/i.test(v.name) || /brit/i.test(v.name));
+    if (preferred) utterance.voice = preferred;
+  };
+
+  pickVoice();
+  if (!utterance.voice) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      pickVoice();
+    };
+  }
+
+  browserTtsPromise = new Promise<void>((resolve) => {
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+  });
+  window.speechSynthesis.speak(utterance);
+}
+
 // ---------------------------------------------------------------------------
 // Init components
 // ---------------------------------------------------------------------------
@@ -53,6 +84,7 @@ const socket = createSocket(WS_URL);
 
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
+let voiceBooted = false;
 
 function transition(newState: State) {
   if (newState === currentState) return;
@@ -74,6 +106,18 @@ function transition(newState: State) {
       voiceInput.pause();
       break;
   }
+}
+
+function bootVoiceInput() {
+  if (isMuted) return;
+  if (!voiceBooted) {
+    voiceBooted = true;
+    voiceInput.start();
+    transition("listening");
+    return;
+  }
+  voiceInput.resume();
+  transition("listening");
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +163,10 @@ socket.onMessage((msg) => {
     } else {
       // TTS failed — no audio but still need to return to idle
       console.warn("[audio] no data received, returning to idle");
+      if (msg.text) {
+        transition("speaking");
+        speakFallback(String(msg.text));
+      }
       transition("idle");
     }
     // Log text for debugging
@@ -137,6 +185,11 @@ socket.onMessage((msg) => {
   } else if (type === "text") {
     // Text fallback when TTS fails
     console.log("[JARVIS]", msg.text);
+    if (msg.text) {
+      transition("speaking");
+      speakFallback(String(msg.text));
+      setTimeout(() => transition("idle"), 250);
+    }
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {
@@ -148,11 +201,20 @@ socket.onMessage((msg) => {
 // Kick off
 // ---------------------------------------------------------------------------
 
-// Start listening after a brief delay for the orb to render
-setTimeout(() => {
-  voiceInput.start();
-  transition("listening");
-}, 1000);
+statusEl.textContent = "click anywhere to enable mic";
+
+diagnoseVoiceInput().then((diag) => {
+  console.log("[voice] diagnostics", diag);
+  if (!diag.supported) {
+    showError("Speech recognition is not supported in this browser.");
+  } else if (diag.permissionState === "denied") {
+    showError("Microphone permission is denied in browser settings.");
+  } else if (!diag.secureContext) {
+    showError("Mic needs a secure context. Use HTTPS or localhost.");
+  } else if (diag.audioInputCount === 0) {
+    showError("No microphone input device found.");
+  }
+});
 
 // Resume AudioContext on ANY user interaction (browser autoplay policy)
 function ensureAudioContext() {
@@ -161,9 +223,15 @@ function ensureAudioContext() {
     ctx.resume().then(() => console.log("[audio] context resumed"));
   }
 }
+function ensureVoiceInput() {
+  bootVoiceInput();
+}
 document.addEventListener("click", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
+document.addEventListener("click", ensureVoiceInput);
+document.addEventListener("touchstart", ensureVoiceInput);
+document.addEventListener("keydown", ensureVoiceInput);
 
 // Try to resume audio context on load
 ensureAudioContext();
@@ -186,8 +254,7 @@ btnMute.addEventListener("click", (e) => {
     voiceInput.pause();
     transition("idle");
   } else {
-    voiceInput.resume();
-    transition("listening");
+    bootVoiceInput();
   }
 });
 
@@ -222,14 +289,4 @@ btnFixSelf.addEventListener("click", (e) => {
 });
 
 // Settings button
-const btnSettings = document.getElementById("btn-settings")!;
-btnSettings.addEventListener("click", (e) => {
-  e.stopPropagation();
-  menuDropdown.style.display = "none";
-  openSettings();
-});
-
-// First-time setup detection — check after a short delay for server readiness
-setTimeout(() => {
-  checkFirstTimeSetup();
-}, 2000);
+// Settings panel removed; configuration is driven by .env / backend state.

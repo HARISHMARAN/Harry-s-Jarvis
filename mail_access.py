@@ -1,20 +1,39 @@
 """
-JARVIS Mail Access — READ-ONLY access to Apple Mail.
+JARVIS Mail Access — Apple Mail or Gmail support.
 
-Any accounts synced to Mail.app (Gmail, iCloud, Exchange, etc.)
-are automatically available. No OAuth needed.
+If Google OAuth credentials are configured, Gmail is used directly.
+Otherwise, accounts synced to Mail.app are used via AppleScript.
 
-IMPORTANT: This module is intentionally READ-ONLY.
-No send, delete, move, or modify functions exist by design.
+Google-backed mail helpers support reading, sending, and basic message modification.
 """
 
 import asyncio
+import os
 import logging
 from datetime import datetime
+
+from google_access import (
+    google_archive_message,
+    google_latest_message,
+    google_read_message,
+    google_recent_messages,
+    google_search_messages,
+    google_send_message,
+    google_mark_message_read,
+    google_mark_message_unread,
+    google_unread_count,
+    google_unread_messages,
+    google_trash_message,
+    is_google_configured,
+)
 
 log = logging.getLogger("jarvis.mail")
 
 _mail_launched = False
+
+
+def _google_account_name() -> str:
+    return os.getenv("GOOGLE_USER_EMAIL", "").strip() or "Google"
 
 
 async def _ensure_mail_running():
@@ -78,6 +97,12 @@ async def _run_mail_script(script: str, timeout: float = 20) -> str:
 
 async def get_accounts() -> list[str]:
     """Get list of configured mail account names."""
+    if is_google_configured():
+        try:
+            await google_unread_count()
+            return [_google_account_name()]
+        except Exception as e:
+            log.warning(f"Google mail account lookup failed, falling back to Apple Mail: {e}")
     script = """
 tell application "Mail"
     return name of every account
@@ -94,6 +119,12 @@ async def get_unread_count() -> dict:
 
     Returns: {"total": int, "accounts": {"Google": 5, "Work": 3, ...}}
     """
+    if is_google_configured():
+        try:
+            return await google_unread_count()
+        except Exception as e:
+            log.warning(f"Google unread count failed, falling back to Apple Mail: {e}")
+
     script = """
 tell application "Mail"
     set totalUnread to unread count of inbox
@@ -130,6 +161,12 @@ async def get_recent_messages(count: int = 10) -> list[dict]:
 
     Returns list of {"sender", "subject", "date", "read", "account", "preview"}.
     """
+    if is_google_configured():
+        try:
+            return await google_recent_messages(count=count)
+        except Exception as e:
+            log.warning(f"Google recent messages failed, falling back to Apple Mail: {e}")
+
     script = f"""
 tell application "Mail"
     set allMsgs to messages of inbox
@@ -177,8 +214,51 @@ end tell
     return messages
 
 
+async def get_latest_message() -> dict | None:
+    """Get the newest message in the inbox, fully expanded."""
+    if is_google_configured():
+        try:
+            return await google_latest_message()
+        except Exception as e:
+            log.warning(f"Google latest message failed, falling back to Apple Mail: {e}")
+
+    script = """
+tell application "Mail"
+    set allMsgs to messages of inbox
+    if (count of allMsgs) is 0 then return ""
+    set m to item 1 of allMsgs
+    set s to sender of m
+    set subj to subject of m
+    set d to date received of m as string
+    set c to content of m
+    if length of c > 4000 then
+        set c to text 1 thru 4000 of c
+    end if
+    return s & "|||" & subj & "|||" & d & "|||" & c
+end tell
+"""
+    raw = await _run_mail_script(script, timeout=20)
+    if not raw:
+        return None
+    parts = raw.split("|||", 3)
+    if len(parts) < 4:
+        return None
+    return {
+        "sender": parts[0].strip(),
+        "subject": parts[1].strip(),
+        "date": parts[2].strip(),
+        "content": parts[3].strip(),
+    }
+
+
 async def get_unread_messages(count: int = 10) -> list[dict]:
     """Get unread messages from unified inbox."""
+    if is_google_configured():
+        try:
+            return await google_unread_messages(count=count)
+        except Exception as e:
+            log.warning(f"Google unread messages failed, falling back to Apple Mail: {e}")
+
     script = f"""
 tell application "Mail"
     set allMsgs to messages of inbox whose read status is false
@@ -225,6 +305,14 @@ end tell
 
 async def get_messages_from_account(account_name: str, count: int = 10) -> list[dict]:
     """Get recent messages from a specific account's inbox."""
+    if is_google_configured():
+        try:
+            if account_name and account_name.lower() not in {_google_account_name().lower(), "google"}:
+                return []
+            return await google_recent_messages(count=count)
+        except Exception as e:
+            log.warning(f"Google account messages failed, falling back to Apple Mail: {e}")
+
     escaped = account_name.replace('"', '\\"')
     script = f"""
 tell application "Mail"
@@ -267,6 +355,12 @@ async def search_mail(query: str, count: int = 10) -> list[dict]:
     Uses AppleScript filtering on subject. For broader search,
     we check both subject and sender.
     """
+    if is_google_configured():
+        try:
+            return await google_search_messages(query, count=count)
+        except Exception as e:
+            log.warning(f"Google mail search failed, falling back to Apple Mail: {e}")
+
     escaped = query.replace('"', '\\"').replace("\\", "\\\\")
     script = f"""
 tell application "Mail"
@@ -309,6 +403,12 @@ async def read_message(subject_match: str) -> dict | None:
 
     Returns {"sender", "subject", "date", "content"} or None.
     """
+    if is_google_configured():
+        try:
+            return await google_read_message(subject_match)
+        except Exception as e:
+            log.warning(f"Google message read failed, falling back to Apple Mail: {e}")
+
     escaped = subject_match.replace('"', '\\"').replace("\\", "\\\\")
     script = f"""
 tell application "Mail"
@@ -342,6 +442,37 @@ end tell
             "content": parts[3].strip(),
         }
     return None
+
+
+async def send_mail(to: str, subject: str, body: str, cc: str = "", bcc: str = "") -> dict:
+    """Send a message through Gmail when configured; otherwise raise on Apple Mail."""
+    if is_google_configured():
+        return await google_send_message(to, subject, body, cc=cc, bcc=bcc)
+    raise RuntimeError("Sending mail is only supported through Gmail in this build")
+
+
+async def mark_message_read(message_id: str) -> dict:
+    if is_google_configured():
+        return await google_mark_message_read(message_id)
+    raise RuntimeError("Mark read is only supported through Gmail in this build")
+
+
+async def mark_message_unread(message_id: str) -> dict:
+    if is_google_configured():
+        return await google_mark_message_unread(message_id)
+    raise RuntimeError("Mark unread is only supported through Gmail in this build")
+
+
+async def archive_message(message_id: str) -> dict:
+    if is_google_configured():
+        return await google_archive_message(message_id)
+    raise RuntimeError("Archive is only supported through Gmail in this build")
+
+
+async def trash_message(message_id: str) -> dict:
+    if is_google_configured():
+        return await google_trash_message(message_id)
+    raise RuntimeError("Trash is only supported through Gmail in this build")
 
 
 def format_unread_summary(unread: dict) -> str:

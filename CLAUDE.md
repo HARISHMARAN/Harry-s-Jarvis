@@ -48,6 +48,6 @@ When a user clones this repo and starts Claude Code, help them:
 - JARVIS personality: British butler, dry wit, economy of language
 - Max 1-2 sentences per voice response
 - Action tags: [ACTION:BUILD], [ACTION:BROWSE], [ACTION:RESEARCH], etc.
-- AppleScript for all macOS integrations (no OAuth needed)
+- AppleScript for macOS integrations by default; Google OAuth support is available for Gmail and Google Calendar when configured
 - Read-only for Mail (safety by design)
 - SQLite for all local data storage

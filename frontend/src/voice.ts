@@ -13,6 +13,13 @@ export interface VoiceInput {
   resume(): void;
 }
 
+export interface VoiceDiagnostics {
+  supported: boolean;
+  secureContext: boolean;
+  permissionState: "granted" | "denied" | "prompt" | "unknown";
+  audioInputCount: number | null;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const webkitSpeechRecognition: any;
 
@@ -30,10 +37,38 @@ export function createVoiceInput(
   const recognition = new SR();
   recognition.continuous = true;
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
   recognition.lang = "en-US";
 
   let shouldListen = false;
   let paused = false;
+  let restartTimer: number | null = null;
+
+  function scheduleRestart() {
+    if (!shouldListen || paused) return;
+    if (restartTimer !== null) window.clearTimeout(restartTimer);
+    restartTimer = window.setTimeout(() => {
+      restartTimer = null;
+      if (!shouldListen || paused) return;
+      try {
+        recognition.start();
+      } catch {
+        // Chrome throws if recognition is already running or starting.
+      }
+    }, 250);
+  }
+
+  recognition.onstart = () => {
+    console.log("[voice] recognition started");
+  };
+
+  recognition.onspeechstart = () => {
+    console.log("[voice] speech detected");
+  };
+
+  recognition.onspeechend = () => {
+    console.log("[voice] speech ended");
+  };
 
   recognition.onresult = (event: any) => {
     for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -45,25 +80,38 @@ export function createVoiceInput(
   };
 
   recognition.onend = () => {
-    if (shouldListen && !paused) {
-      try {
-        recognition.start();
-      } catch {
-        // Already started
-      }
-    }
+    scheduleRestart();
   };
 
   recognition.onerror = (event: any) => {
-    if (event.error === "not-allowed") {
+    const errorCode = event?.error ?? event?.message ?? event?.type ?? "unknown";
+    const details = {
+      error: event?.error ?? null,
+      message: event?.message ?? null,
+      type: event?.type ?? null,
+      target: event?.target ? "[SpeechRecognition]" : null,
+      secureContext: window.isSecureContext,
+      supported: Boolean(SR),
+    };
+    console.warn(`[voice] recognition error event: ${errorCode}`, details);
+
+    if (errorCode === "not-allowed") {
       onError("Microphone access denied. Please allow microphone access.");
-      shouldListen = false;
-    } else if (event.error === "no-speech") {
-      // Normal, just restart
-    } else if (event.error === "aborted") {
-      // Expected during pause
+      paused = true;
+    } else if (errorCode === "no-speech") {
+      scheduleRestart();
+    } else if (errorCode === "aborted") {
+      scheduleRestart();
+    } else if (errorCode === "audio-capture") {
+      onError("No microphone found. Check your input device.");
+    } else if (errorCode === "network") {
+      onError("Speech recognition network error. Check your connection.");
+      scheduleRestart();
+    } else if (errorCode === "service-not-allowed") {
+      onError("Speech recognition blocked by the browser.");
     } else {
-      console.warn("[voice] recognition error:", event.error);
+      onError(`Speech recognition error: ${String(errorCode)}`);
+      scheduleRestart();
     }
   };
 
@@ -74,16 +122,24 @@ export function createVoiceInput(
       try {
         recognition.start();
       } catch {
-        // Already started
+        // Chrome throws if recognition is already running or starting.
       }
     },
     stop() {
       shouldListen = false;
       paused = false;
+      if (restartTimer !== null) {
+        window.clearTimeout(restartTimer);
+        restartTimer = null;
+      }
       recognition.stop();
     },
     pause() {
       paused = true;
+      if (restartTimer !== null) {
+        window.clearTimeout(restartTimer);
+        restartTimer = null;
+      }
       recognition.stop();
     },
     resume() {
@@ -96,6 +152,37 @@ export function createVoiceInput(
         }
       }
     },
+  };
+}
+
+export async function diagnoseVoiceInput(): Promise<VoiceDiagnostics> {
+  const supported = Boolean((window as any).SpeechRecognition || (typeof webkitSpeechRecognition !== "undefined"));
+  let permissionState: VoiceDiagnostics["permissionState"] = "unknown";
+
+  try {
+    if (navigator.permissions?.query) {
+      const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
+      permissionState = status.state as VoiceDiagnostics["permissionState"];
+    }
+  } catch {
+    permissionState = "unknown";
+  }
+
+  let audioInputCount: number | null = null;
+  try {
+    if (navigator.mediaDevices?.enumerateDevices) {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioInputCount = devices.filter((d) => d.kind === "audioinput").length;
+    }
+  } catch {
+    audioInputCount = null;
+  }
+
+  return {
+    supported,
+    secureContext: window.isSecureContext,
+    permissionState,
+    audioInputCount,
   };
 }
 

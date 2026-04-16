@@ -96,7 +96,17 @@ USER_NAME=Tony
 # Optional -- specific calendar accounts (comma-separated)
 # Leave empty to auto-discover all calendars
 CALENDAR_ACCOUNTS=you@gmail.com,work@company.com
+
+# Optional -- Google OAuth credentials for Gmail + Google Calendar
+GOOGLE_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
+GOOGLE_REFRESH_TOKEN=your-google-refresh-token
+GOOGLE_USER_EMAIL=you@gmail.com
+GOOGLE_CALENDAR_IDS=primary
+GOOGLE_TIMEZONE=Asia/Kolkata
 ```
+
+If Google OAuth values are present, JARVIS will prefer Gmail and Google Calendar automatically.
 
 ## Architecture
 

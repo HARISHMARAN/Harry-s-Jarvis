@@ -1,8 +1,8 @@
 /**
- * JARVIS — Settings Panel
+ * JARVIS — Settings bridge
  *
- * Overlay panel for API keys, connection status, preferences, and system info.
- * Slides in from the right with glass-morphism styling.
+ * The on-screen settings panel has been removed.
+ * This module remains as a lightweight compatibility shim.
  */
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,11 @@ interface StatusResponse {
     anthropic: boolean;
     fish_audio: boolean;
     fish_voice_id: boolean;
+    google_client_id?: boolean;
+    google_client_secret?: boolean;
+    google_refresh_token?: boolean;
+    google_calendar_ids?: boolean;
+    google_user_email?: boolean;
     user_name: string;
   };
 }
@@ -85,7 +90,7 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>Anthropic API Key</label>
             <div class="settings-input-row">
-              <input type="password" id="input-anthropic-key" placeholder="sk-ant-..." />
+              <input type="password" id="input-anthropic-key" placeholder="Paste your Anthropic API key here" />
               <button class="settings-btn" id="btn-test-anthropic">Test</button>
               <span class="status-dot" id="status-anthropic"></span>
             </div>
@@ -94,7 +99,7 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>Fish Audio API Key</label>
             <div class="settings-input-row">
-              <input type="password" id="input-fish-key" placeholder="Fish Audio key..." />
+              <input type="password" id="input-fish-key" placeholder="Paste your Fish Audio API key here" />
               <button class="settings-btn" id="btn-test-fish">Test</button>
               <span class="status-dot" id="status-fish"></span>
             </div>
@@ -103,13 +108,52 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>Fish Voice ID</label>
             <div class="settings-input-row">
-              <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
+              <input type="text" id="input-fish-voice-id" placeholder="Paste your Fish Voice ID here" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
             </div>
           </div>
 
+          <div class="settings-field">
+            <label>Fish Speech Speed</label>
+            <div class="settings-input-row">
+              <input type="text" id="input-fish-speech-speed" placeholder="1.25" />
+              <button class="settings-btn" id="btn-save-speech-speed">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>Google Client ID</label>
+            <input type="text" id="input-google-client-id" placeholder="Your Google OAuth client ID" />
+          </div>
+
+          <div class="settings-field">
+            <label>Google Client Secret</label>
+            <input type="password" id="input-google-client-secret" placeholder="Your Google OAuth client secret" />
+          </div>
+
+          <div class="settings-field">
+            <label>Google Refresh Token</label>
+            <input type="password" id="input-google-refresh-token" placeholder="Your Google OAuth refresh token" />
+          </div>
+
+          <div class="settings-field">
+            <label>Google User Email</label>
+            <input type="email" id="input-google-user-email" placeholder="you@gmail.com" />
+          </div>
+
+          <div class="settings-field">
+            <label>Google Calendar IDs</label>
+            <textarea id="input-google-calendar-ids" rows="2" placeholder="primary or comma-separated calendar IDs"></textarea>
+          </div>
+
+          <div class="settings-field">
+            <label>Google Timezone</label>
+            <input type="text" id="input-google-timezone" placeholder="Asia/Kolkata" />
+          </div>
+
           <div class="settings-actions">
             <button class="settings-btn primary" id="btn-save-keys">Save Keys</button>
+            <button class="settings-btn primary" id="btn-save-google">Save Google</button>
           </div>
         </section>
 
@@ -121,6 +165,8 @@ function buildPanelHTML(): string {
             <div class="status-row"><span class="status-dot" id="status-calendar"></span><span>Apple Calendar</span></div>
             <div class="status-row"><span class="status-dot" id="status-mail"></span><span>Apple Mail</span></div>
             <div class="status-row"><span class="status-dot" id="status-notes"></span><span>Apple Notes</span></div>
+            <div class="status-row"><span class="status-dot" id="status-google-mail"></span><span>Google Mail</span></div>
+            <div class="status-row"><span class="status-dot" id="status-google-calendar"></span><span>Google Calendar</span></div>
             <div class="status-row"><span class="status-dot" id="status-server"></span><span>Server</span><span class="status-detail" id="status-server-detail"></span></div>
           </div>
         </section>
@@ -131,7 +177,7 @@ function buildPanelHTML(): string {
 
           <div class="settings-field">
             <label>Your Name</label>
-            <input type="text" id="input-user-name" placeholder="Your name" />
+            <input type="text" id="input-user-name" placeholder="Enter the name JARVIS should use" />
           </div>
 
           <div class="settings-field">
@@ -145,7 +191,7 @@ function buildPanelHTML(): string {
 
           <div class="settings-field">
             <label>Calendar Accounts</label>
-            <textarea id="input-calendar-accounts" rows="2" placeholder="auto (or comma-separated emails)"></textarea>
+            <textarea id="input-calendar-accounts" rows="2" placeholder="auto or comma-separated calendar emails"></textarea>
           </div>
 
           <div class="settings-actions">
@@ -209,6 +255,8 @@ async function loadStatus() {
     setDotStatus("status-calendar", status.calendar_accessible ? "green" : "red");
     setDotStatus("status-mail", status.mail_accessible ? "green" : "red");
     setDotStatus("status-notes", status.notes_accessible ? "green" : "red");
+    setDotStatus("status-google-mail", status.env_keys_set.google_refresh_token ? "green" : "red");
+    setDotStatus("status-google-calendar", status.env_keys_set.google_refresh_token ? "green" : "red");
     setDotStatus("status-server", "green");
 
     const serverDetail = document.getElementById("status-server-detail");
@@ -275,6 +323,32 @@ function wireEvents() {
     if (voiceId) {
       await apiPost("/api/settings/keys", { key_name: "FISH_VOICE_ID", key_value: voiceId });
     }
+  });
+
+  // Save speech speed
+  document.getElementById("btn-save-speech-speed")?.addEventListener("click", async () => {
+    const speechSpeed = (document.getElementById("input-fish-speech-speed") as HTMLInputElement).value.trim();
+    if (speechSpeed) {
+      await apiPost("/api/settings/keys", { key_name: "FISH_SPEECH_SPEED", key_value: speechSpeed });
+    }
+  });
+
+  // Save Google auth
+  document.getElementById("btn-save-google")?.addEventListener("click", async () => {
+    const googleClientId = (document.getElementById("input-google-client-id") as HTMLInputElement).value.trim();
+    const googleClientSecret = (document.getElementById("input-google-client-secret") as HTMLInputElement).value.trim();
+    const googleRefreshToken = (document.getElementById("input-google-refresh-token") as HTMLInputElement).value.trim();
+    const googleUserEmail = (document.getElementById("input-google-user-email") as HTMLInputElement).value.trim();
+    const googleCalendarIds = (document.getElementById("input-google-calendar-ids") as HTMLTextAreaElement).value.trim();
+    const googleTimezone = (document.getElementById("input-google-timezone") as HTMLInputElement).value.trim();
+
+    if (googleClientId) await apiPost("/api/settings/keys", { key_name: "GOOGLE_CLIENT_ID", key_value: googleClientId });
+    if (googleClientSecret) await apiPost("/api/settings/keys", { key_name: "GOOGLE_CLIENT_SECRET", key_value: googleClientSecret });
+    if (googleRefreshToken) await apiPost("/api/settings/keys", { key_name: "GOOGLE_REFRESH_TOKEN", key_value: googleRefreshToken });
+    if (googleUserEmail) await apiPost("/api/settings/keys", { key_name: "GOOGLE_USER_EMAIL", key_value: googleUserEmail });
+    if (googleCalendarIds) await apiPost("/api/settings/keys", { key_name: "GOOGLE_CALENDAR_IDS", key_value: googleCalendarIds });
+    if (googleTimezone) await apiPost("/api/settings/keys", { key_name: "GOOGLE_TIMEZONE", key_value: googleTimezone });
+    await loadStatus();
   });
 
   // Test Anthropic
@@ -380,38 +454,12 @@ async function advanceSetup() {
 // ---------------------------------------------------------------------------
 
 export async function openSettings() {
-  if (isOpen) return;
-  isOpen = true;
-
-  if (!panelEl) {
-    panelEl = createPanel();
-    wireEvents();
-  }
-
-  panelEl.style.display = "block";
-
-  // Trigger animation
-  requestAnimationFrame(() => {
-    panelEl!.classList.add("open");
-  });
-
-  // Load data
-  const status = await loadStatus();
-  await loadPreferences();
-
-  // Check for first-time setup
-  if (status && !status.env_keys_set.anthropic) {
-    enterSetupMode();
-  }
+  // Intentionally disabled. Configuration is managed from .env and backend state.
+  console.info("[settings] panel removed; configuration is managed automatically");
 }
 
 export function closeSettings() {
-  if (!panelEl || !isOpen) return;
-  isOpen = false;
-  panelEl.classList.remove("open");
-  setTimeout(() => {
-    if (panelEl) panelEl.style.display = "none";
-  }, 300);
+  // No-op: settings panel removed.
 }
 
 export function isSettingsOpen(): boolean {
@@ -422,14 +470,6 @@ export function isSettingsOpen(): boolean {
  * Check if first-time setup is needed and auto-open.
  */
 export async function checkFirstTimeSetup(): Promise<boolean> {
-  try {
-    const status = await apiGet<StatusResponse>("/api/settings/status");
-    if (!status.env_keys_set.anthropic) {
-      openSettings();
-      return true;
-    }
-  } catch {
-    // Server not ready yet, skip
-  }
+  // No setup UI anymore.
   return false;
 }
