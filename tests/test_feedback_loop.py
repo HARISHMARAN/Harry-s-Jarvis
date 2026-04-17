@@ -111,8 +111,11 @@ async def test_retry_below_max_attempts():
     )
     mock_proc.pid = 12345
 
+    async def fake_wait_for(awaitable, timeout):
+        return await awaitable
+
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=mock_proc.communicate.return_value):
+        with patch("asyncio.wait_for", side_effect=fake_wait_for):
             result = await qa.auto_retry(
                 task_prompt="Create calculator.py",
                 issues=["Missing zero division handling"],
