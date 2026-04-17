@@ -32,12 +32,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+try:
+    import anthropic
+    import httpx
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
+except ModuleNotFoundError as exc:
+    missing = exc.name or "an unknown dependency"
+    project_root = Path(__file__).parent
+    raise SystemExit(
+        f"Missing Python dependency '{missing}'. "
+        f"Run `python3 -m pip install -r {project_root / 'requirements.txt'}` "
+        f"from {project_root}."
+    ) from exc
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_claude_in_project, _generate_project_name, prompt_existing_terminal
 from work_mode import WorkSession, is_casual_question

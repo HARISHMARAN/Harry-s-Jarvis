@@ -5,7 +5,7 @@
  * speech recognition, and audio playback into a single experience.
  */
 
-import { createOrb, type OrbState } from "./orb";
+import type { OrbState } from "./orb";
 import { createVoiceInput, createAudioPlayer, diagnoseVoiceInput } from "./voice";
 import { createSocket } from "./ws";
 import "./style.css";
@@ -21,6 +21,11 @@ let browserTtsPromise: Promise<void> | null = null;
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
+
+interface OrbHandle {
+  setState(s: OrbState): void;
+  setAnalyser(a: AnalyserNode | null): void;
+}
 
 function showError(msg: string) {
   errorEl.textContent = msg;
@@ -76,20 +81,32 @@ function speakFallback(text: string) {
 // ---------------------------------------------------------------------------
 
 const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
-const orb = createOrb(canvas);
+let orb: OrbHandle | null = null;
 
 const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
 const WS_URL = `${wsProto}//${window.location.host}/ws/voice`;
 const socket = createSocket(WS_URL);
 
 const audioPlayer = createAudioPlayer();
-orb.setAnalyser(audioPlayer.getAnalyser());
 let voiceBooted = false;
+let pendingOrbState: OrbState = currentState;
+
+void import("./orb")
+  .then(({ createOrb }) => {
+    orb = createOrb(canvas);
+    orb.setAnalyser(audioPlayer.getAnalyser());
+    orb.setState(pendingOrbState);
+  })
+  .catch((err) => {
+    console.error("[orb] failed to load", err);
+    showError("Visualization failed to load.");
+  });
 
 function transition(newState: State) {
   if (newState === currentState) return;
   currentState = newState;
-  orb.setState(newState as OrbState);
+  pendingOrbState = newState;
+  orb?.setState(newState as OrbState);
   updateStatus(newState);
 
   switch (newState) {
