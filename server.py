@@ -51,6 +51,17 @@ from memory import (
 )
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
+from github_access import (
+    format_commit_summary,
+    format_recent_commits,
+    format_worktree_status,
+    get_current_branch,
+    get_latest_commit,
+    get_recent_commits,
+    get_repo_remote_url,
+    get_worktree_status,
+    is_github_configured,
+)
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -104,6 +115,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN spawn Claude Code in a Terminal window for coding tasks
 - You CAN create project folders on the Desktop
 - You CAN check Desktop projects and their git status
+- You CAN read the current git repository state and explain the latest commit
 - You CAN plan complex tasks by asking smart questions before executing
 - You CAN see what's on {user_name}'s screen — open windows, active apps, and screenshot vision
 - You CAN read {user_name}'s calendar — today's events, upcoming meetings, schedule overview
@@ -187,6 +199,8 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
 - [ACTION:OPEN_TERMINAL] — when user just wants a fresh Claude Code terminal with no specific project
+- [ACTION:OPEN_WHATSAPP] — open WhatsApp Web in Chrome
+- [ACTION:OPEN_TELEGRAM] — open Telegram Web in Chrome
 CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're LOOKING AT — ALWAYS use [ACTION:SCREEN] or let the fast action system handle it. NEVER use [ACTION:PROMPT_PROJECT] for screen requests. PROMPT_PROJECT is ONLY for working on code projects.
 
 - [ACTION:PROMPT_PROJECT] project_name ||| prompt — THIS IS YOUR MOST POWERFUL ACTION. Use it whenever the user wants to work on, jump into, resume, check on, or interact with ANY existing project. You connect directly to Claude Code in that project and can read its response. Craft a clear prompt based on what the user wants. Examples:
@@ -203,6 +217,7 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
   "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
 - [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
+- [ACTION:CHECK_REPO] — summarize the current git repository, latest commit, and worktree status.
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -225,6 +240,9 @@ SCHEDULE:
 
 EMAIL:
 {mail_context}
+
+GIT / GITHUB:
+{github_context}
 
 ACTIVE TASKS:
 {active_tasks}
@@ -738,7 +756,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|CHECK_REPO|OPEN_WHATSAPP|OPEN_TELEGRAM)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1124,6 +1142,10 @@ async def generate_response(
     screen_ctx = _ctx_cache["screen"]
     calendar_ctx = _ctx_cache["calendar"]
     mail_ctx = _ctx_cache["mail"]
+    try:
+        repo_ctx = format_commit_summary(get_latest_commit(PROJECT_DIR))
+    except Exception:
+        repo_ctx = "Repository data unavailable."
 
     # Check if any lookups are in progress
     lookup_status = get_lookup_status()
@@ -1134,6 +1156,7 @@ async def generate_response(
         screen_context=screen_ctx or "Not checked yet.",
         calendar_context=calendar_ctx,
         mail_context=mail_ctx,
+        github_context=repo_ctx,
         active_tasks=task_mgr.get_active_tasks_summary(),
         dispatch_context=dispatch_registry.format_for_prompt(),
         known_projects=format_projects_for_prompt(projects),
@@ -1465,6 +1488,148 @@ async def api_list_projects():
 
 # -- Fast Action Detection (no LLM call) -----------------------------------
 
+ACTION_KEYWORDS = {
+    "browse": [
+        "search for",
+        "look up",
+        "google",
+        "browse",
+        "go to",
+        "pull up",
+        "open browser",
+        "open chrome",
+        "open firefox",
+        "visit",
+    ],
+    "describe_screen": [
+        "look at my screen",
+        "what's on my screen",
+        "whats on my screen",
+        "what am i looking at",
+        "what do you see",
+        "see my screen",
+        "what's running on my",
+        "whats running on my",
+        "check my screen",
+        "what's open",
+        "whats open",
+        "what apps are open",
+    ],
+    "open_terminal": [
+        "open claude",
+        "start claude",
+        "launch claude",
+        "run claude",
+    ],
+    "show_recent": [
+        "show me what you built",
+        "pull up what you made",
+        "open what you built",
+    ],
+    "check_calendar": [
+        "what's my schedule",
+        "whats my schedule",
+        "what's on my calendar",
+        "whats on my calendar",
+        "do i have any meetings",
+        "any meetings",
+        "what's next on my calendar",
+        "my schedule today",
+        "what do i have today",
+        "my calendar",
+        "upcoming meetings",
+        "next meeting",
+        "what's my next meeting",
+    ],
+    "read_last_mail": [
+        "read my last email",
+        "open my last email",
+        "read the last email",
+        "open the last email",
+        "read my latest email",
+        "open my latest email",
+        "read my most recent email",
+        "open my most recent email",
+        "read my newest email",
+        "open my newest email",
+    ],
+    "check_mail": [
+        "check my email",
+        "check my mail",
+        "any new emails",
+        "any new mail",
+        "unread emails",
+        "unread mail",
+        "what's in my inbox",
+        "whats in my inbox",
+        "read my email",
+        "read my mail",
+        "any emails",
+        "any mail",
+        "email update",
+        "mail update",
+    ],
+    "check_dispatch": [
+        "where are we",
+        "where were we",
+        "project status",
+        "how's the build",
+        "hows the build",
+        "status update",
+        "status report",
+        "where is that",
+        "how's it going with",
+        "hows it going with",
+        "is it done",
+        "is that done",
+        "what happened with",
+    ],
+    "check_tasks": [
+        "what's on my list",
+        "whats on my list",
+        "my tasks",
+        "my to do",
+        "my todo",
+        "what do i need to do",
+        "open tasks",
+        "task list",
+    ],
+    "check_usage": [
+        "usage",
+        "how much have you cost",
+        "how much am i spending",
+        "what's the cost",
+        "whats the cost",
+        "api cost",
+        "token usage",
+        "how expensive",
+        "what's my bill",
+    ],
+    "check_repo": [
+        "latest commit",
+        "what was the latest commit about",
+        "what changed in the last commit",
+        "git status",
+        "repo status",
+        "repository status",
+        "latest repo commit",
+        "recent commits",
+        "show my commits",
+        "what's in the repo",
+        "whats in the repo",
+    ],
+    "open_whatsapp": [
+        "open whatsapp",
+        "open whatsapp web",
+        "whatsapp web",
+    ],
+    "open_telegram": [
+        "open telegram",
+        "open telegram web",
+        "telegram web",
+    ],
+}
+
 def _scan_projects_sync() -> list[dict]:
     """Synchronous Desktop scan — runs in executor."""
     projects = []
@@ -1492,63 +1657,52 @@ def detect_action_fast(text: str) -> dict | None:
         return None  # Long messages are conversation, not commands
 
     # Screen requests — checked BEFORE project matching to prevent misrouting
-    if any(p in t for p in ["look at my screen", "what's on my screen", "whats on my screen",
-                             "what am i looking at", "what do you see", "see my screen",
-                             "what's running on my", "whats running on my", "check my screen"]):
+    if any(p in t for p in ACTION_KEYWORDS["describe_screen"]):
         return {"action": "describe_screen"}
 
     # Terminal / Claude Code — explicit open requests
-    if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
+    if any(w in t for w in ACTION_KEYWORDS["open_terminal"]):
         return {"action": "open_terminal"}
 
     # Show recent build
-    if any(w in t for w in ["show me what you built", "pull up what you made", "open what you built"]):
+    if any(w in t for w in ACTION_KEYWORDS["show_recent"]):
         return {"action": "show_recent"}
 
     # Screen awareness — explicit look/see requests
-    if any(p in t for p in ["what's on my screen", "whats on my screen", "what do you see",
-                             "can you see my screen", "look at my screen", "what am i looking at",
-                             "what's open", "whats open", "what apps are open"]):
+    if any(p in t for p in ACTION_KEYWORDS["describe_screen"]):
         return {"action": "describe_screen"}
 
     # Calendar — explicit schedule requests
-    if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
-                             "whats on my calendar", "do i have any meetings", "any meetings",
-                             "what's next on my calendar", "my schedule today",
-                             "what do i have today", "my calendar", "upcoming meetings",
-                             "next meeting", "what's my next meeting"]):
+    if any(p in t for p in ACTION_KEYWORDS["check_calendar"]):
         return {"action": "check_calendar"}
 
     # Mail — explicit email requests
-    if any(p in t for p in ["read my last email", "open my last email", "read the last email",
-                             "open the last email", "read my latest email", "open my latest email",
-                             "read my most recent email", "open my most recent email",
-                             "read my newest email", "open my newest email"]):
+    if any(p in t for p in ACTION_KEYWORDS["read_last_mail"]):
         return {"action": "read_last_mail"}
 
-    if any(p in t for p in ["check my email", "check my mail", "any new emails", "any new mail",
-                             "unread emails", "unread mail", "what's in my inbox",
-                             "whats in my inbox", "read my email", "read my mail",
-                             "any emails", "any mail", "email update", "mail update"]):
+    if any(p in t for p in ACTION_KEYWORDS["check_mail"]):
         return {"action": "check_mail"}
 
     # Dispatch / build status check
-    if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
-                             "hows the build", "status update", "status report", "where is that",
-                             "how's it going with", "hows it going with", "is it done",
-                             "is that done", "what happened with"]):
+    if any(p in t for p in ACTION_KEYWORDS["check_dispatch"]):
         return {"action": "check_dispatch"}
 
     # Task list check
-    if any(p in t for p in ["what's on my list", "whats on my list", "my tasks", "my to do",
-                             "my todo", "what do i need to do", "open tasks", "task list"]):
+    if any(p in t for p in ACTION_KEYWORDS["check_tasks"]):
         return {"action": "check_tasks"}
 
     # Usage / cost check
-    if any(p in t for p in ["usage", "how much have you cost", "how much am i spending",
-                             "what's the cost", "whats the cost", "api cost", "token usage",
-                             "how expensive", "what's my bill"]):
+    if any(p in t for p in ACTION_KEYWORDS["check_usage"]):
         return {"action": "check_usage"}
+
+    if any(p in t for p in ACTION_KEYWORDS["check_repo"]):
+        return {"action": "check_repo"}
+
+    if any(p in t for p in ACTION_KEYWORDS["open_whatsapp"]):
+        return {"action": "open_whatsapp"}
+
+    if any(p in t for p in ACTION_KEYWORDS["open_telegram"]):
+        return {"action": "open_telegram"}
 
     return None  # Everything else goes to the LLM for conversational routing
 
@@ -1734,9 +1888,45 @@ async def _do_last_mail_lookup() -> str:
     subject = latest.get("subject", "(no subject)")
     content = (latest.get("content") or latest.get("snippet") or "").strip()
     if not content:
-        content = "The message body appears to be empty."
+        return f"Your latest email is from {sender}, subject {subject}. Apple Mail isn't exposing the body right now, sir."
     _ctx_cache["mail"] = f"Latest email from {sender}: {subject}"
     return f"Your latest email is from {sender}, subject {subject}. {content[:800]}"
+
+
+async def _do_repo_lookup() -> str:
+    """Summarize the current git repository state."""
+    commit = get_latest_commit(PROJECT_DIR)
+    status = get_worktree_status(PROJECT_DIR)
+
+    if not commit:
+        return "I couldn't read the current repository, sir."
+
+    parts = [format_commit_summary(commit)]
+    if status:
+        parts.append(format_worktree_status(status))
+    remote = get_repo_remote_url(PROJECT_DIR)
+    if remote:
+        parts.append(f"The remote is set to {remote}.")
+    return " ".join(parts)
+
+
+async def _do_recent_commits_lookup(limit: int = 5) -> str:
+    commits = get_recent_commits(limit=limit, repo_root=PROJECT_DIR)
+    return format_recent_commits(commits)
+
+
+async def _do_usage_lookup() -> str:
+    return get_usage_summary()
+
+
+async def _open_whatsapp_web() -> str:
+    await open_browser("https://web.whatsapp.com")
+    return "Opening WhatsApp Web, sir."
+
+
+async def _open_telegram_web() -> str:
+    await open_browser("https://web.telegram.org")
+    return "Opening Telegram Web, sir."
 
 
 async def _do_screen_lookup() -> str:
@@ -2208,6 +2398,12 @@ async def voice_handler(ws: WebSocket):
                             response_text = format_tasks_for_voice(tasks)
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
+                        elif action["action"] == "check_repo":
+                            response_text = await _do_repo_lookup()
+                        elif action["action"] == "open_whatsapp":
+                            response_text = await _open_whatsapp_web()
+                        elif action["action"] == "open_telegram":
+                            response_text = await _open_telegram_web()
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -2352,6 +2548,12 @@ async def voice_handler(ws: WebSocket):
                                             except Exception:
                                                 pass
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
+                                elif embedded_action["action"] == "check_repo":
+                                    asyncio.create_task(_lookup_and_report("repo", _do_repo_lookup, ws, history=history, voice_state=voice_state, force_audio=True))
+                                elif embedded_action["action"] == "open_whatsapp":
+                                    asyncio.create_task(_lookup_and_report("whatsapp", _open_whatsapp_web, ws, history=history, voice_state=voice_state, force_audio=True))
+                                elif embedded_action["action"] == "open_telegram":
+                                    asyncio.create_task(_lookup_and_report("telegram", _open_telegram_web, ws, history=history, voice_state=voice_state, force_audio=True))
 
                 response_text = (response_text or "").strip()
                 if not response_text:
@@ -2557,6 +2759,7 @@ async def api_settings_status():
         "calendar_accessible": calendar_ok,
         "mail_accessible": mail_ok,
         "notes_accessible": notes_ok,
+        "github_configured": is_github_configured(),
         "memory_count": memory_count,
         "task_count": task_count,
         "server_port": 8340,
@@ -2570,6 +2773,7 @@ async def api_settings_status():
             "google_refresh_token": bool(env_dict.get("GOOGLE_REFRESH_TOKEN", "").strip()),
             "google_calendar_ids": bool(env_dict.get("GOOGLE_CALENDAR_IDS", "").strip()),
             "google_user_email": bool(env_dict.get("GOOGLE_USER_EMAIL", "").strip()),
+            "github_token": bool(env_dict.get("GITHUB_TOKEN", "").strip() or env_dict.get("GH_TOKEN", "").strip()),
             "fish_speech_speed": bool(env_dict.get("FISH_SPEECH_SPEED", "").strip()),
             "user_name": env_dict.get("USER_NAME", ""),
         },

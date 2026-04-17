@@ -23,6 +23,7 @@ When a user clones this repo and starts Claude Code, help them:
 - **AI**: Claude Haiku for fast responses, Claude Opus for research
 - **TTS**: Fish Audio with JARVIS voice model
 - **System**: AppleScript for Calendar, Mail, Notes, Terminal integration
+- **GitHub**: local repo summaries plus optional token-based metadata lookups
 
 ## Key Files
 - `server.py` — Main server, WebSocket handler, LLM integration, action system
@@ -43,6 +44,7 @@ When a user clones this repo and starts Claude Code, help them:
 - `FISH_VOICE_ID` (optional) — Voice model ID
 - `USER_NAME` (optional) — Your name for JARVIS to use
 - `CALENDAR_ACCOUNTS` (optional) — Comma-separated calendar emails
+- `GITHUB_TOKEN` (optional) — repo metadata / commit summaries
 
 ## Conventions
 - JARVIS personality: British butler, dry wit, economy of language

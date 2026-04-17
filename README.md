@@ -19,6 +19,7 @@ JARVIS connects to your Apple Calendar, Mail, and Notes. It can browse the web, 
 - **Builds software** -- say "build me a landing page" and watch Claude Code do the work
 - **Reads your calendar** -- "What's on my schedule today?"
 - **Reads your email** -- "Any unread messages?" (read-only, by design)
+- **Explains your git repo** -- "What was the latest commit about?"
 - **Browses the web** -- "Search for the best restaurants in Austin"
 - **Manages tasks** -- "Remind me to call the client tomorrow"
 - **Takes notes** -- "Save that as a note"
@@ -104,9 +105,13 @@ GOOGLE_REFRESH_TOKEN=your-google-refresh-token
 GOOGLE_USER_EMAIL=you@gmail.com
 GOOGLE_CALENDAR_IDS=primary
 GOOGLE_TIMEZONE=Asia/Kolkata
+
+# Optional -- GitHub token for repo metadata / commit summaries
+GITHUB_TOKEN=your-github-token-here
 ```
 
 If Google OAuth values are present, JARVIS will prefer Gmail and Google Calendar automatically.
+If a GitHub token is present, JARVIS can summarize the current repo and recent commits automatically.
 
 ## Architecture
 

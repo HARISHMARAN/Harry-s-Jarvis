@@ -25,6 +25,7 @@ from google_access import (
     google_unread_messages,
     google_trash_message,
     is_google_configured,
+    is_google_usable,
 )
 
 log = logging.getLogger("jarvis.mail")
@@ -97,7 +98,7 @@ async def _run_mail_script(script: str, timeout: float = 20) -> str:
 
 async def get_accounts() -> list[str]:
     """Get list of configured mail account names."""
-    if is_google_configured():
+    if is_google_usable():
         try:
             await google_unread_count()
             return [_google_account_name()]
@@ -119,7 +120,7 @@ async def get_unread_count() -> dict:
 
     Returns: {"total": int, "accounts": {"Google": 5, "Work": 3, ...}}
     """
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_unread_count()
         except Exception as e:
@@ -161,7 +162,7 @@ async def get_recent_messages(count: int = 10) -> list[dict]:
 
     Returns list of {"sender", "subject", "date", "read", "account", "preview"}.
     """
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_recent_messages(count=count)
         except Exception as e:
@@ -216,13 +217,13 @@ end tell
 
 async def get_latest_message() -> dict | None:
     """Get the newest message in the inbox, fully expanded."""
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_latest_message()
         except Exception as e:
             log.warning(f"Google latest message failed, falling back to Apple Mail: {e}")
 
-    script = """
+    meta_script = """
 tell application "Mail"
     set allMsgs to messages of inbox
     if (count of allMsgs) is 0 then return ""
@@ -230,30 +231,29 @@ tell application "Mail"
     set s to sender of m
     set subj to subject of m
     set d to date received of m as string
-    set c to content of m
-    if length of c > 4000 then
-        set c to text 1 thru 4000 of c
-    end if
-    return s & "|||" & subj & "|||" & d & "|||" & c
+    set r to read status of m
+    return s & "|||" & subj & "|||" & d & "|||" & r
 end tell
 """
-    raw = await _run_mail_script(script, timeout=20)
+    raw = await _run_mail_script(meta_script, timeout=8)
     if not raw:
         return None
     parts = raw.split("|||", 3)
     if len(parts) < 4:
         return None
+
     return {
         "sender": parts[0].strip(),
         "subject": parts[1].strip(),
         "date": parts[2].strip(),
-        "content": parts[3].strip(),
+        "read": parts[3].strip().lower() == "true",
+        "content": "",
     }
 
 
 async def get_unread_messages(count: int = 10) -> list[dict]:
     """Get unread messages from unified inbox."""
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_unread_messages(count=count)
         except Exception as e:
@@ -305,7 +305,7 @@ end tell
 
 async def get_messages_from_account(account_name: str, count: int = 10) -> list[dict]:
     """Get recent messages from a specific account's inbox."""
-    if is_google_configured():
+    if is_google_usable():
         try:
             if account_name and account_name.lower() not in {_google_account_name().lower(), "google"}:
                 return []
@@ -355,7 +355,7 @@ async def search_mail(query: str, count: int = 10) -> list[dict]:
     Uses AppleScript filtering on subject. For broader search,
     we check both subject and sender.
     """
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_search_messages(query, count=count)
         except Exception as e:
@@ -403,7 +403,7 @@ async def read_message(subject_match: str) -> dict | None:
 
     Returns {"sender", "subject", "date", "content"} or None.
     """
-    if is_google_configured():
+    if is_google_usable():
         try:
             return await google_read_message(subject_match)
         except Exception as e:

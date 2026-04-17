@@ -23,7 +23,7 @@ GOOGLE_CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
 GOOGLE_SCOPES_GMAIL = "https://www.googleapis.com/auth/gmail.modify"
 GOOGLE_SCOPES_CALENDAR = "https://www.googleapis.com/auth/calendar.readonly"
 
-_token_cache: dict[str, Any] = {"access_token": "", "expires_at": 0.0}
+_token_cache: dict[str, Any] = {"access_token": "", "expires_at": 0.0, "auth_failed": False}
 
 
 def is_google_configured() -> bool:
@@ -31,6 +31,10 @@ def is_google_configured() -> bool:
         os.getenv(key, "").strip()
         for key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
     )
+
+
+def is_google_usable() -> bool:
+    return is_google_configured() and not bool(_token_cache.get("auth_failed"))
 
 
 def _calendar_ids() -> list[str]:
@@ -68,7 +72,14 @@ async def _refresh_access_token() -> str | None:
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(GOOGLE_TOKEN_URL, data=data)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _token_cache["auth_failed"] = True
+        detail = resp.text[:300].replace("\n", " ").strip()
+        log = __import__("logging").getLogger("jarvis.google")
+        log.warning(f"Google token refresh failed: {resp.status_code} {detail}")
+        raise e
     payload = resp.json()
     access_token = payload.get("access_token")
     if not access_token:
@@ -88,7 +99,13 @@ async def _google_request(method: str, url: str, *, params: dict[str, Any] | Non
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.request(method, url, params=params, json=json, headers=headers)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        detail = resp.text[:300].replace("\n", " ").strip()
+        log = __import__("logging").getLogger("jarvis.google")
+        log.warning(f"Google request failed: {resp.status_code} {detail}")
+        raise e
     return resp.json()
 
 
